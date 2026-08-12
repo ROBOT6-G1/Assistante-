@@ -212,12 +212,16 @@ async function markKeyError(id: string, currentErrors: number) {
 }
 
 /** Auto-detect available Gemini models dynamically from the Google Gemini API key */
-async function fetchAvailableGeminiModels(apiKey: string): Promise<{ ok: boolean; models: string[]; error?: string }> {
+export async function fetchAvailableGeminiModels(apiKey: string): Promise<{ ok: boolean; models: string[]; error?: string }> {
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    const cleanKey = (apiKey || "").trim();
+    if (!cleanKey) {
+      return { ok: false, models: [], error: "Clé API vide" };
+    }
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
     if (!res.ok) {
       const t = await res.text();
-      return { ok: false, models: [], error: `Clé Gemini inaccessible (${res.status}): ${t.slice(0, 180)}` };
+      return { ok: false, models: [], error: `Google API (${res.status}): ${t.slice(0, 180)}` };
     }
     const json: any = await res.json();
     const list: any[] = json.models ?? [];
@@ -238,6 +242,9 @@ async function callGemini(
   parts: AiPart[],
   modelName: string = GEMINI_MODEL,
 ): Promise<string> {
+  const cleanKey = (apiKey || "").trim();
+  if (!cleanKey) throw new Error("Clé API Gemini vide");
+
   const contents = [
     ...history.map((t) => ({
       role: t.role === "assistant" ? "model" : "user",
@@ -252,7 +259,7 @@ async function callGemini(
   };
 
   // 1. Auto-discover available models from API key dynamically
-  const discovery = await fetchAvailableGeminiModels(apiKey);
+  const discovery = await fetchAvailableGeminiModels(cleanKey);
 
   const standardCandidates = [
     "gemini-2.5-flash",
@@ -276,7 +283,7 @@ async function callGemini(
   for (const m of uniqueModels) {
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${cleanKey}`,
         { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
       );
       if (!res.ok) {
@@ -397,11 +404,15 @@ export async function generateAiReply(opts: {
     );
   }
 
+  const keyErrors: string[] = [];
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const key = await pickGeminiKey(userId);
     if (!key) break;
     try {
-      const raw = await callGemini(key.api_key, strictSystemPrompt, history, parts, modelToUse);
+      const cleanKey = (key.api_key || "").trim();
+      if (!cleanKey) throw new Error(`Clé '${key.label}' vide`);
+      const raw = await callGemini(cleanKey, strictSystemPrompt, history, parts, modelToUse);
       await markKeyUsed(key.id);
       const cleaned = sanitizeReply(raw, allowLinks);
       if (cleaned.length < minChars || looksTruncated(cleaned)) {
@@ -419,13 +430,17 @@ export async function generateAiReply(opts: {
       }
       return { text: cleaned, provider: `gemini:${key.label}` };
     } catch (e) {
-      console.error("[Gemini] error", key.label, e);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("[Gemini] error", key.label, errMsg);
+      keyErrors.push(`${key.label}: ${errMsg}`);
       await markKeyError(key.id, key.error_count ?? 0);
     }
   }
 
   throw new Error(
-    "Clés API Gemini invalides ou temporairement désactivées. Vérifiez vos clés dans le menu 'Clés Gemini'.",
+    keyErrors.length
+      ? `Erreur Clé Gemini [${keyErrors.join(" | ")}]. Vérifiez vos clés dans le menu 'Clés Gemini'.`
+      : "Clés API Gemini invalides ou temporairement désactivées. Vérifiez vos clés dans le menu 'Clés Gemini'.",
   );
 }
 

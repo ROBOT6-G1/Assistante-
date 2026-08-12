@@ -84,10 +84,54 @@ export const upsertGeminiKey = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => upsertKeySchema.parse(d))
   .handler(async ({ data, context }) => {
-    const payload = { ...data, user_id: context.userId, error_count: 0, disabled_until: null };
+    const cleanKey = data.api_key.trim();
+    const { fetchAvailableGeminiModels } = await import("@/lib/ai-engine.server");
+    const testRes = await fetchAvailableGeminiModels(cleanKey);
+    if (!testRes.ok) {
+      throw new Error(`La clé API Gemini est refusée par Google: ${testRes.error}`);
+    }
+
+    const payload = {
+      ...data,
+      api_key: cleanKey,
+      user_id: context.userId,
+      error_count: 0,
+      disabled_until: null,
+    };
     const { error } = await context.supabase.from("gemini_keys").upsert(payload);
     if (error) throw new Error(error.message);
-    return { ok: true };
+    return { ok: true, models: testRes.models };
+  });
+
+export const testGeminiKey = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { data: keyData, error } = await context.supabase
+      .from("gemini_keys")
+      .select("*")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .single();
+    if (error || !keyData) throw new Error("Clé introuvable");
+
+    const { fetchAvailableGeminiModels } = await import("@/lib/ai-engine.server");
+    const cleanKey = (keyData.api_key || "").trim();
+    const res = await fetchAvailableGeminiModels(cleanKey);
+    if (!res.ok) {
+      await context.supabase
+        .from("gemini_keys")
+        .update({ error_count: (keyData.error_count ?? 0) + 1 })
+        .eq("id", data.id);
+      throw new Error(res.error || "Clé Gemini invalide ou inaccessible");
+    }
+
+    await context.supabase
+      .from("gemini_keys")
+      .update({ error_count: 0, disabled_until: null, is_active: true })
+      .eq("id", data.id);
+
+    return { ok: true, models: res.models };
   });
 
 export const deleteGeminiKey = createServerFn({ method: "POST" })
