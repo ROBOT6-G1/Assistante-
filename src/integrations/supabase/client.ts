@@ -250,16 +250,62 @@ class QueryBuilder {
     }
   }
 
-  async upsert(data: any) {
+  async upsert(data: any, options?: { onConflict?: string }) {
     try {
       const items = Array.isArray(data) ? data : [data];
       const upserted = [];
 
       for (const item of items) {
-        const id = item.id || crypto.randomUUID();
-        const created_at = item.created_at || new Date().toISOString();
-        const updated_at = item.updated_at || new Date().toISOString();
-        const docData = { ...item, id, created_at, updated_at };
+        let id = item.id;
+        let existingDoc: any = null;
+
+        // 1. If an ID is provided, check if it already exists in Firestore
+        if (id) {
+          const docRef = doc(db, this.colName, id);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            existingDoc = docSnap;
+          }
+        } 
+        // 2. Otherwise, if onConflict is specified, look up the document by those fields
+        else if (options?.onConflict) {
+          const keys = options.onConflict.split(",");
+          let q = query(collection(db, this.colName));
+          let hasAllKeys = true;
+          for (const key of keys) {
+            const trimmedKey = key.trim();
+            if (item[trimmedKey] !== undefined) {
+              q = query(q, where(trimmedKey, "==", item[trimmedKey]));
+            } else {
+              hasAllKeys = false;
+            }
+          }
+          if (hasAllKeys) {
+            const snapshot = await getDocs(query(q, firestoreLimit(1)));
+            if (!snapshot.empty) {
+              existingDoc = snapshot.docs[0];
+              id = existingDoc.id;
+            }
+          }
+        }
+
+        // 3. Fallback to generating a new ID if none found
+        if (!id) {
+          id = crypto.randomUUID();
+        }
+
+        const created_at = item.created_at || (existingDoc ? existingDoc.data().created_at : null) || new Date().toISOString();
+        const updated_at = new Date().toISOString();
+
+        // Merge existing document fields with the incoming item so we NEVER erase other properties
+        const existingData = existingDoc ? existingDoc.data() : {};
+        const docData = {
+          ...existingData,
+          ...item,
+          id,
+          created_at,
+          updated_at,
+        };
 
         const docRef = doc(db, this.colName, id);
         await setDoc(docRef, docData, { merge: true });
@@ -267,6 +313,7 @@ class QueryBuilder {
       }
       return { data: upserted, error: null };
     } catch (err: any) {
+      console.error("Firestore upsert error:", err);
       return { data: null, error: err };
     }
   }

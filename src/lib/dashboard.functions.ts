@@ -117,13 +117,46 @@ export const toggleGeminiKey = createServerFn({ method: "POST" })
 export const getSettings = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data, error } = await context.supabase
+    const { data: allSettings, error } = await context.supabase
       .from("settings")
       .select("*")
-      .eq("user_id", context.userId)
-      .maybeSingle();
+      .eq("user_id", context.userId);
+
     if (error) throw new Error(error.message);
-    return data;
+
+    if (!allSettings || allSettings.length === 0) {
+      return null;
+    }
+
+    // Proactive DB Auto-repair: Merge duplicate settings rows and clean up extras
+    if (allSettings.length > 1) {
+      const baseSettings = { ...allSettings[0] };
+      for (let i = 1; i < allSettings.length; i++) {
+        const other = allSettings[i];
+        for (const key of Object.keys(other)) {
+          if (other[key] !== null && other[key] !== undefined && other[key] !== "") {
+            if (baseSettings[key] == null || baseSettings[key] === "") {
+              baseSettings[key] = other[key];
+            }
+          }
+        }
+      }
+
+      // Re-upsert the fully merged record
+      await context.supabase.from("settings").upsert(baseSettings, { onConflict: "user_id" });
+
+      // Clean up the duplicate rows
+      for (let i = 1; i < allSettings.length; i++) {
+        const other = allSettings[i];
+        if (other.id !== baseSettings.id) {
+          await context.supabase.from("settings").delete().eq("id", other.id);
+        }
+      }
+
+      return baseSettings;
+    }
+
+    return allSettings[0];
   });
 
 const updateSettingsSchema = z.object({
