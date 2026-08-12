@@ -373,7 +373,18 @@ const mockSupabase = {
   },
   auth: {
     getUser: async () => {
-      const user = auth.currentUser;
+      if (typeof window === "undefined") {
+        return { data: { user: null }, error: null };
+      }
+      let user = auth.currentUser;
+      if (!user) {
+        user = await new Promise((resolve) => {
+          const unsubscribe = onAuthStateChanged(auth, (u) => {
+            unsubscribe();
+            resolve(u);
+          });
+        });
+      }
       return {
         data: {
           user: user
@@ -387,7 +398,18 @@ const mockSupabase = {
       };
     },
     getSession: async () => {
-      const user = auth.currentUser;
+      if (typeof window === "undefined") {
+        return { data: { session: null }, error: null };
+      }
+      let user = auth.currentUser;
+      if (!user) {
+        user = await new Promise((resolve) => {
+          const unsubscribe = onAuthStateChanged(auth, (u) => {
+            unsubscribe();
+            resolve(u);
+          });
+        });
+      }
       const token = user ? await user.getIdToken() : null;
       return {
         data: {
