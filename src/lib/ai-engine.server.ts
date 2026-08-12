@@ -282,6 +282,22 @@ function normalizeContentsForGemini(history: ChatTurn[], parts: AiPart[]) {
   return merged;
 }
 
+function sanitizeAiResponse(text: string): string {
+  if (!text) return "";
+  let cleaned = text;
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  cleaned = cleaned.replace(/```thinking[\s\S]*?```/gi, "");
+  const lines = cleaned.split("\n");
+  const filteredLines = lines.filter((line) => {
+    const l = line.trim().toLowerCase();
+    if (l.startsWith("thinking:") || l.startsWith("thought:") || l.startsWith("analyse:") || l.startsWith("let me analyze")) {
+      return false;
+    }
+    return true;
+  });
+  return filteredLines.join("\n").trim();
+}
+
 async function callGemini(
   apiKey: string,
   systemPrompt: string,
@@ -344,7 +360,7 @@ async function callGemini(
         console.warn("[gemini] réponse tronquée par MAX_TOKENS, longueur:", text.length);
       }
       if (!text) throw new Error(`Réponse vide du modèle ${m} (finishReason=${finish ?? "unknown"})`);
-      return text;
+      return sanitizeAiResponse(text);
     } catch (err: any) {
       lastError = err.message || String(err);
     }
@@ -655,14 +671,17 @@ export async function buildSystemPrompt(
   }
 
   const styleRules =
-    "Règles de style OBLIGATOIRES :\n" +
-    "- Réponds dans la même langue que l'utilisateur (malgache ou français).\n" +
-    "- Style calme, professionnel, bienveillant, chaleureux et véritablement persuasif — comme un vendeur/conseiller humain expérimenté.\n" +
-    "- Respecte toujours le client, remercie-le pour son intérêt, valorise sa demande.\n" +
-    "- Phrases courtes, saut de ligne entre les idées, texte aéré.\n" +
-    "- N'utilise JAMAIS les caractères * ou # ni aucun markdown.\n" +
-    "- Pas de listes à puces markdown ; si tu énumères, utilise des chiffres (1. 2. 3.).\n" +
-    "- Tiens compte de l'historique de la conversation ci-dessous et souviens-toi de ce que l'utilisateur a déjà dit.\n\n" +
+    "RÈGLES ABSOLUES ET STRICTES DE RÉPONSE :\n" +
+    "1. INTERDICTION FORMELLE d'afficher ton processus de pensée, ton analyse, ton raisonnement ou du texte en anglais. Pas de 'Thinking:', 'Let me check', 'Analyse:', etc.\n" +
+    "2. INTERDICTION DE RÉPÉTER LA QUESTION DU CLIENT. Ne dis jamais 'Vous avez demandé...' ou 'Vous voulez savoir...'. Réponds directement.\n" +
+    "3. Réponds UNIQUEMENT et DIRECTEMENT au message du client dans EXACTEMENT LA MÊME LANGUE qu'il a utilisée (en malgache si le client écrit en malgache, en français s'il écrit en français). N'utilise jamais l'anglais.\n" +
+    "4. Donne DIRECTEMENT la réponse finale prête à être envoyée au client.\n" +
+    "5. Style calme, professionnel, bienveillant, chaleureux et véritablement persuasif — comme un vendeur/conseiller humain expérimenté.\n" +
+    "6. Respecte toujours le client, remercie-le pour son intérêt, valorise sa demande.\n" +
+    "7. Phrases courtes, saut de ligne entre les idées, texte aéré.\n" +
+    "8. N'utilise JAMAIS les caractères * ou # ni aucun markdown.\n" +
+    "9. Pas de listes à puces markdown ; si tu énumères, utilise des chiffres (1. 2. 3.).\n" +
+    "10. Tiens compte de l'historique de la conversation ci-dessous et souviens-toi de ce que l'utilisateur a déjà dit.\n\n" +
     "RÈGLE CATALOGUE (IMPORTANTE) :\n" +
     "- Présente la liste complète des formations/produits UNIQUEMENT lors du TOUT PREMIER échange avec ce client (quand l'historique ci-dessous est vide ou ne contient encore aucune réponse de ta part).\n" +
     "- Aux messages suivants, NE REPRODUIS PLUS la liste. Concentre-toi précisément sur ce que le client demande : explique en détail, réponds à ses questions, rassure-le, mets en avant les bénéfices, propose la prochaine étape.\n" +
