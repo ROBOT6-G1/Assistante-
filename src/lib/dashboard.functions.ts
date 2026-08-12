@@ -19,7 +19,7 @@ export const listPrompts = createServerFn({ method: "GET" })
 
 const upsertPromptSchema = z.object({
   id: z.string().uuid().optional(),
-  name: z.string().min(1).max(100),
+  name: z.string().max(100).optional().default("Prompt IA"),
   content: z.string().min(1).max(20000),
   category: promptCategory,
   is_active: z.boolean(),
@@ -35,6 +35,7 @@ export const upsertPrompt = createServerFn({ method: "POST" })
     const pageIds = data.page_ids ?? (data.page_id ? [data.page_id] : []);
     const payload = {
       ...data,
+      name: data.name?.trim() || "Prompt IA",
       page_ids: pageIds,
       page_id: pageIds.length === 1 ? pageIds[0] : null,
       assistance_type: data.assistance_type ?? null,

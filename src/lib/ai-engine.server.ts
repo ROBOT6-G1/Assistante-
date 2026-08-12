@@ -105,10 +105,11 @@ async function expandIncompleteReply(opts: {
 
   const { data: settings } = await supabaseAdmin
     .from("settings")
-    .select("use_lovable_ai_fallback")
+    .select("use_lovable_ai_fallback,default_model")
     .eq("user_id", opts.userId)
     .maybeSingle();
   const lovableEnabled = settings?.use_lovable_ai_fallback ?? true;
+  const modelToUse = settings?.default_model || "gemini-2.5-flash";
 
   if (lovableEnabled) {
     try {
@@ -128,7 +129,7 @@ async function expandIncompleteReply(opts: {
     const key = await pickGeminiKey(opts.userId);
     if (!key) break;
     try {
-      const raw = await callGemini(key.api_key, strictPrompt, opts.history, expandedParts);
+      const raw = await callGemini(key.api_key, strictPrompt, opts.history, expandedParts, modelToUse);
       await markKeyUsed(key.id);
       return { raw, provider: `gemini:${key.label}:expanded` };
     } catch (e) {
@@ -201,6 +202,7 @@ async function callGemini(
   systemPrompt: string,
   history: ChatTurn[],
   parts: AiPart[],
+  modelName: string = GEMINI_MODEL,
 ): Promise<string> {
   const contents = [
     ...history.map((t) => ({
@@ -215,7 +217,7 @@ async function callGemini(
     generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
   };
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
   );
   if (!res.ok) {
@@ -284,10 +286,11 @@ export async function generateAiReply(opts: {
 
   const { data: settings } = await supabaseAdmin
     .from("settings")
-    .select("use_lovable_ai_fallback")
+    .select("use_lovable_ai_fallback,default_model")
     .eq("user_id", userId)
     .maybeSingle();
   const lovableEnabled = settings?.use_lovable_ai_fallback ?? true;
+  const modelToUse = settings?.default_model || "gemini-2.5-flash";
 
   if (lovableEnabled) {
     try {
@@ -316,7 +319,7 @@ export async function generateAiReply(opts: {
     const key = await pickGeminiKey(userId);
     if (!key) break;
     try {
-      const raw = await callGemini(key.api_key, strictSystemPrompt, history, parts);
+      const raw = await callGemini(key.api_key, strictSystemPrompt, history, parts, modelToUse);
       await markKeyUsed(key.id);
       const cleaned = sanitizeReply(raw, allowLinks);
       if (cleaned.length < minChars || looksTruncated(cleaned)) {

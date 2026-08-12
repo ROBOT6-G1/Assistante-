@@ -118,11 +118,13 @@ function PromptsPage() {
       toast.error("Choisissez au moins une page Facebook");
       return;
     }
+    const categoryLabel = CATEGORY_LABELS[form.category] || form.category;
+    const finalName = form.name.trim() || `Prompt ${categoryLabel}`;
     try {
       await upsertPrompt({
         data: {
           id: editing?.id,
-          name: form.name,
+          name: finalName,
           content: form.content,
           category: form.category as PromptRow["category"],
           is_active: form.is_active,
