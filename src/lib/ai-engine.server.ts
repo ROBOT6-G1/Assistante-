@@ -345,11 +345,6 @@ function sanitizeAiResponse(text: string): string {
     cleaned = actualLines.join("\n").trim();
   }
 
-  // Max 2000 characters limit as requested
-  if (cleaned.length > 2000) {
-    cleaned = cleaned.slice(0, 2000).trim();
-  }
-
   return cleaned;
 }
 
@@ -1112,8 +1107,10 @@ export async function sendCommentReply(pageToken: string, commentId: string, tex
   if (!res.ok) throw new Error(`Comment reply ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
-/** Send a private reply to a comment (redirects user to Messenger). */
+/** Send a private reply to a comment (redirects user to Messenger). Supports chunked unlimited text. */
 export async function sendPrivateReply(pageToken: string, commentId: string, text: string) {
+  const chunks = splitMessengerText(text);
+  if (chunks.length === 0) return;
   const res = await fetch(
     `https://graph.facebook.com/v21.0/me/messages?access_token=${pageToken}`,
     {
@@ -1121,7 +1118,8 @@ export async function sendPrivateReply(pageToken: string, commentId: string, tex
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         recipient: { comment_id: commentId },
-        message: { text },
+        message: { text: chunks[0] },
+        messaging_type: "RESPONSE",
       }),
     },
   );
@@ -1357,12 +1355,34 @@ async function handleFeedChange(page: any, value: any) {
 
     const baseContext = `Publication de la page :\n"""${postContext}"""\n\nCommentaire de ${authorName ?? "l'utilisateur"} :\n"""${content || "(sans texte)"}"""${imageParts.length ? "\n\n(Une image a été jointe au commentaire, analyse-la avant de répondre.)" : ""}`;
 
-    // 1) Tentative MP détaillée
-    let privateSent = false;
-    let privateReply = "";
+    // 1) Réponse publique (doit s'aligner strictement avec la description de la publication et répondre au commentaire)
+    let finalPublic = "";
     let providerUsed = "";
     try {
-      const privPrompt = `${baseContext}\n\nRédige une réponse Messenger complète et détaillée : explication claire, étapes numérotées si besoin (avec des chiffres, pas de #), et si utile le lien : ${privateLink || "(aucun lien fourni)"}. Style calme, aéré, sans * ni #.`;
+      const pubPrompt = `${baseContext}\n\nRédige une réponse publique au commentaire de l'utilisateur qui s'aligne STRICTEMENT avec la description de la publication ci-dessus et répond directement à sa question (en malgache si le client écrit en malgache, en français sinon). 1 à 2 phrases chaleureuses, professionnelles et bienveillantes, invitant la personne. Sans lien, sans * ni #.`;
+      const pub = await generateAiReply({
+        userId: page.user_id,
+        systemPrompt,
+        history,
+        parts: [{ text: pubPrompt }, ...imageParts],
+        allowLinks: false,
+      });
+      finalPublic = extractAiActions(pub.text).cleanText;
+      providerUsed = pub.provider;
+    } catch (e) {
+      console.warn("[public reply failed]", e instanceof Error ? e.message : e);
+    }
+
+    if (!finalPublic.trim()) {
+      finalPublic = "Misaotra tamin'ny hevitrao. Handray anao amin'ny antsipiriany izahay.";
+    }
+    await sendCommentReply(page.page_access_token, commentId, finalPublic);
+
+    // 2) Message privé détaillé (illimité, multi-part si long)
+    let privateSent = false;
+    let privateReply = "";
+    try {
+      const privPrompt = `${baseContext}\n\nRédige une réponse Messenger privée complète et détaillée basée sur la publication : explication claire, étapes numérotées si besoin (avec des chiffres, pas de #), et si utile le lien : ${privateLink || "(aucun lien fourni)"}. Style calme, aéré, sans * ni #.`;
       const priv = await generateAiReply({
         userId: page.user_id,
         systemPrompt,
@@ -1371,55 +1391,27 @@ async function handleFeedChange(page: any, value: any) {
         allowLinks: true,
       });
       privateReply = extractAiActions(priv.text).cleanText;
-      providerUsed = priv.provider;
-      await sendPrivateReply(page.page_access_token, commentId, privateReply);
-      privateSent = true;
-    } catch (e) {
-      console.warn("[private reply failed - fallback public]", e instanceof Error ? e.message : e);
-    }
-
-    // 2) Réponse publique
-    let finalPublic = "";
-    if (privateSent) {
-      const pubPrompt = `${baseContext}\n\nRédige une réponse publique très brève (1 à 2 phrases), professionnelle et bienveillante, invitant discrètement la personne à consulter la réponse détaillée envoyée en message privé. Sans lien, sans * ni #.`;
-      const pub = await generateAiReply({
-        userId: page.user_id,
-        systemPrompt,
-        history,
-        parts: [{ text: pubPrompt }, ...imageParts],
-        allowLinks: false,
-        minChars: 120,
-      });
-      finalPublic = extractAiActions(pub.text).cleanText;
-      if (containsLink(finalPublic)) {
-        finalPublic =
-          "Nandefa ny valiny feno amin'ny hafatra manokana ho anao izahay. Jereo azafady ao amin'ny Messenger.";
+      providerUsed = providerUsed || priv.provider;
+      if (privateReply.trim()) {
+        await sendPrivateReply(page.page_access_token, commentId, privateReply);
+        const chunks = splitMessengerText(privateReply);
+        if (chunks.length > 1 && authorId) {
+          for (let k = 1; k < chunks.length; k++) {
+            await sendMessengerReply(page.page_access_token, authorId, chunks[k]);
+          }
+        }
+        privateSent = true;
       }
-      providerUsed = providerUsed || pub.provider;
-    } else {
-      const pubPrompt = `${baseContext}\n\nRédige directement dans le commentaire public une réponse complète et détaillée : explication claire, étapes numérotées si besoin (avec des chiffres, pas de #). ${privateLink ? `Termine par ce lien utile : ${privateLink}` : ""} Style calme, aéré, sans * ni #.`;
-      const pub = await generateAiReply({
-        userId: page.user_id,
-        systemPrompt,
-        history,
-        parts: [{ text: pubPrompt }, ...imageParts],
-        allowLinks: true,
-      });
-      finalPublic = extractAiActions(pub.text).cleanText;
-      providerUsed = pub.provider;
+    } catch (e) {
+      console.warn("[private reply failed]", e instanceof Error ? e.message : e);
     }
-
-    if (!finalPublic.trim()) {
-      finalPublic = "Misaotra tamin'ny hafatra. Handray anao tsy ho ela izahay.";
-    }
-    await sendCommentReply(page.page_access_token, commentId, finalPublic);
 
     await supabaseAdmin
       .from("comments_log")
       .update({
         replied: true,
         replied_at: new Date().toISOString(),
-        ai_response: `[${providerUsed}${privateSent ? "+MP" : "+public-full"}] ${finalPublic}${privateReply ? `\n---MP---\n${privateReply}` : ""}`,
+        ai_response: `[${providerUsed}${privateSent ? "+MP" : "+public-only"}] ${finalPublic}${privateReply ? `\n---MP---\n${privateReply}` : ""}`,
       })
       .eq("comment_id", commentId);
   } catch (e) {
