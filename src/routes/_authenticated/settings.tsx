@@ -44,11 +44,11 @@ function SettingsPage() {
     if (data) {
       setForm({
         assistance_type: (data as any).assistance_type ?? "online_work",
-        auto_reply_messages: data.auto_reply_messages,
-        auto_reply_comments: data.auto_reply_comments,
-        comment_scan_interval_minutes: data.comment_scan_interval_minutes,
-        use_lovable_ai_fallback: data.use_lovable_ai_fallback,
-        default_model: data.default_model,
+        auto_reply_messages: data.auto_reply_messages ?? true,
+        auto_reply_comments: data.auto_reply_comments ?? true,
+        comment_scan_interval_minutes: data.comment_scan_interval_minutes ?? 5,
+        use_lovable_ai_fallback: data.use_lovable_ai_fallback ?? true,
+        default_model: data.default_model ?? "gemini-2.5-flash",
         private_message_link: data.private_message_link ?? "",
         facebook_app_id: data.facebook_app_id ?? "",
         facebook_app_secret: data.facebook_app_secret ?? "",
