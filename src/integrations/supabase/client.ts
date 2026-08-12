@@ -172,19 +172,65 @@ class QueryBuilder {
 
   async then(onfulfilled?: (value: any) => any, onrejected?: (reason: any) => any) {
     try {
-      let q = query(collection(db, this.colName));
-      for (const f of this.filters) {
-        q = query(q, where(f.field, f.op, f.value));
-      }
-      if (this.orderField) {
-        q = query(q, orderBy(this.orderField, this.orderAscending ? "asc" : "desc"));
-      }
-      if (this.limitCount !== undefined) {
-        q = query(q, firestoreLimit(this.limitCount));
+      let snapshot;
+      try {
+        let q = query(collection(db, this.colName));
+        for (const f of this.filters) {
+          q = query(q, where(f.field, f.op, f.value));
+        }
+        if (this.orderField) {
+          q = query(q, orderBy(this.orderField, this.orderAscending ? "asc" : "desc"));
+        }
+        if (this.limitCount !== undefined) {
+          q = query(q, firestoreLimit(this.limitCount));
+        }
+        snapshot = await getDocs(q);
+      } catch (indexError) {
+        // Fallback: try querying by user_id if present, otherwise fetch entire collection
+        const userFilter = this.filters.find((f) => f.field === "user_id" && f.op === "==");
+        if (userFilter) {
+          snapshot = await getDocs(query(collection(db, this.colName), where("user_id", "==", userFilter.value)));
+        } else {
+          snapshot = await getDocs(collection(db, this.colName));
+        }
       }
 
-      const snapshot = await getDocs(q);
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      let data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
+      // In-memory filtering to guarantee complete correctness regardless of index missing
+      for (const f of this.filters) {
+        if (f.op === "==") {
+          data = data.filter((item: any) => item[f.field] === f.value);
+        } else if (f.op === "!=") {
+          data = data.filter((item: any) => item[f.field] !== f.value);
+        } else if (f.op === ">=") {
+          data = data.filter((item: any) => item[f.field] >= f.value);
+        } else if (f.op === "<=") {
+          data = data.filter((item: any) => item[f.field] <= f.value);
+        } else if (f.op === "in") {
+          data = data.filter((item: any) => Array.isArray(f.value) && f.value.includes(item[f.field]));
+        }
+      }
+
+      // In-memory sorting
+      if (this.orderField) {
+        const field = this.orderField;
+        const asc = this.orderAscending;
+        data.sort((a: any, b: any) => {
+          const valA = a[field];
+          const valB = b[field];
+          if (valA === undefined || valA === null) return asc ? -1 : 1;
+          if (valB === undefined || valB === null) return asc ? 1 : -1;
+          if (valA < valB) return asc ? -1 : 1;
+          if (valA > valB) return asc ? 1 : -1;
+          return 0;
+        });
+      }
+
+      // In-memory limit
+      if (this.limitCount !== undefined && data.length > this.limitCount) {
+        data = data.slice(0, this.limitCount);
+      }
 
       if (this.pendingUpdateData !== undefined) {
         const updated = [];

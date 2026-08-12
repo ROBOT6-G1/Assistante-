@@ -168,43 +168,44 @@ export function splitMessengerText(text: string, maxLength = MESSENGER_TEXT_LIMI
 }
 
 async function pickGeminiKey(userId: string) {
-  const nowIso = new Date().toISOString();
-  let { data } = await supabaseAdmin
+  const { data: keys } = await supabaseAdmin
     .from("gemini_keys")
     .select("*")
     .eq("user_id", userId)
-    .eq("is_active", true)
-    .or(`disabled_until.is.null,disabled_until.lt.${nowIso}`)
-    .order("last_used_at", { ascending: true, nullsFirst: true })
-    .limit(1)
-    .maybeSingle();
+    .eq("is_active", true);
 
-  // If all active keys are currently marked disabled_until, fallback to any active key
-  if (!data) {
-    const { data: fallbackKey } = await supabaseAdmin
-      .from("gemini_keys")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("is_active", true)
-      .order("last_used_at", { ascending: true, nullsFirst: true })
-      .limit(1)
-      .maybeSingle();
-    data = fallbackKey;
-  }
+  if (!keys || keys.length === 0) return null;
 
-  return data;
+  const now = Date.now();
+  // Filter out keys disabled_until in the future
+  const available = keys.filter((k: any) => {
+    if (!k.disabled_until) return true;
+    return new Date(k.disabled_until).getTime() <= now;
+  });
+
+  const listToUse = available.length > 0 ? available : keys;
+
+  // Sort by last_used_at ascending (nulls / oldest first)
+  listToUse.sort((a: any, b: any) => {
+    if (!a.last_used_at && !b.last_used_at) return 0;
+    if (!a.last_used_at) return -1;
+    if (!b.last_used_at) return 1;
+    return new Date(a.last_used_at).getTime() - new Date(b.last_used_at).getTime();
+  });
+
+  return listToUse[0] ?? null;
 }
 
 async function markKeyUsed(id: string) {
   await supabaseAdmin
     .from("gemini_keys")
-    .update({ last_used_at: new Date().toISOString(), error_count: 0 })
+    .update({ last_used_at: new Date().toISOString(), error_count: 0, disabled_until: null })
     .eq("id", id);
 }
 
 async function markKeyError(id: string, currentErrors: number) {
   const next = currentErrors + 1;
-  const disabled = next >= 3 ? new Date(Date.now() + 60 * 60 * 1000).toISOString() : null;
+  const disabled = next >= 5 ? new Date(Date.now() + 10 * 60 * 1000).toISOString() : null;
   await supabaseAdmin
     .from("gemini_keys")
     .update({ error_count: next, disabled_until: disabled })
@@ -235,6 +236,52 @@ export async function fetchAvailableGeminiModels(apiKey: string): Promise<{ ok: 
   }
 }
 
+/** Safely merge conversation history into strictly alternating user/model turns for Gemini API */
+function normalizeContentsForGemini(history: ChatTurn[], parts: AiPart[]) {
+  const rawItems = [
+    ...history.map((t) => ({
+      role: t.role === "assistant" ? "model" : "user",
+      parts: [{ text: t.text || "" }],
+    })),
+    { role: "user", parts },
+  ];
+
+  // Filter out items with no valid text or inline_data
+  const validItems = rawItems.filter((item) => {
+    if (!item.parts || item.parts.length === 0) return false;
+    return item.parts.some((p: any) => {
+      if ("text" in p && typeof p.text === "string" && p.text.trim().length > 0) return true;
+      if ("inline_data" in p && p.inline_data) return true;
+      return false;
+    });
+  });
+
+  if (validItems.length === 0) {
+    return [{ role: "user", parts: [{ text: "(message)" }] }];
+  }
+
+  // Merge consecutive turns with the same role
+  const merged: typeof validItems = [];
+  for (const item of validItems) {
+    if (merged.length > 0 && merged[merged.length - 1].role === item.role) {
+      merged[merged.length - 1].parts.push(...item.parts);
+    } else {
+      merged.push({ role: item.role, parts: [...item.parts] });
+    }
+  }
+
+  // Ensure first turn starts with 'user'
+  if (merged.length > 0 && merged[0].role === "model") {
+    merged.shift();
+  }
+
+  if (merged.length === 0) {
+    return [{ role: "user", parts: [{ text: "(message)" }] }];
+  }
+
+  return merged;
+}
+
 async function callGemini(
   apiKey: string,
   systemPrompt: string,
@@ -245,13 +292,7 @@ async function callGemini(
   const cleanKey = (apiKey || "").trim();
   if (!cleanKey) throw new Error("Clé API Gemini vide");
 
-  const contents = [
-    ...history.map((t) => ({
-      role: t.role === "assistant" ? "model" : "user",
-      parts: [{ text: t.text }],
-    })),
-    { role: "user", parts },
-  ];
+  const contents = normalizeContentsForGemini(history, parts);
   const body = {
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents,
