@@ -2,6 +2,18 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
+async function ensureBucket(supabase: any, bucketName: string) {
+  try {
+    const { data: buckets } = await supabase.storage.listBuckets();
+    const exists = buckets?.some((b: any) => b.name === bucketName);
+    if (!exists) {
+      await supabase.storage.createBucket(bucketName, { public: false });
+    }
+  } catch (e) {
+    // Ignore if buckets cannot be listed/created due to RLS/permissions
+  }
+}
+
 /* ---------------- List ---------------- */
 
 export const listScheduledPosts = createServerFn({ method: "GET" })
@@ -44,13 +56,24 @@ export const upsertScheduledPost = createServerFn({ method: "POST" })
       status: "pending" as const,
       last_error: null,
     };
-    const { data: row, error } = await context.supabase
-      .from("scheduled_posts")
-      .upsert(payload)
-      .select("id")
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    return { ok: true, id: row?.id };
+
+    let targetId = data.id;
+    if (targetId) {
+      const { error } = await context.supabase
+        .from("scheduled_posts")
+        .update(payload)
+        .eq("id", targetId);
+      if (error) throw new Error(error.message);
+    } else {
+      const { data: row, error } = await context.supabase
+        .from("scheduled_posts")
+        .insert(payload)
+        .select("id")
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      targetId = row?.id;
+    }
+    return { ok: true, id: targetId };
   });
 
 /* ---------------- Delete ---------------- */
@@ -86,6 +109,7 @@ export const createVideoUploadUrl = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ filename: z.string().min(1).max(200) }).parse(d))
   .handler(async ({ data, context }) => {
+    await ensureBucket(context.supabase, "post-videos");
     const safeName = data.filename.replace(/[^\w.\-]/g, "_");
     const path = `${context.userId}/${crypto.randomUUID()}-${safeName}`;
     const { data: signed, error } = await context.supabase.storage
@@ -118,6 +142,7 @@ export const uploadPostImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => uploadSchema.parse(d))
   .handler(async ({ data, context }) => {
+    await ensureBucket(context.supabase, "post-images");
     const safeName = data.filename.replace(/[^\w.\-]/g, "_");
     const path = `${context.userId}/${crypto.randomUUID()}-${safeName}`;
     const bytes = Uint8Array.from(atob(data.data_base64), (c) => c.charCodeAt(0));

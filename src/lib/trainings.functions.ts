@@ -33,13 +33,23 @@ export const upsertTraining = createServerFn({ method: "POST" })
       payload.price = null;
       payload.payment_flow = null;
     }
-    const { data: row, error } = await context.supabase
-      .from("trainings")
-      .upsert(payload)
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return row;
+    let res;
+    if (data.id) {
+      res = await context.supabase
+        .from("trainings")
+        .update(payload)
+        .eq("id", data.id)
+        .select()
+        .single();
+    } else {
+      res = await context.supabase
+        .from("trainings")
+        .insert(payload)
+        .select()
+        .single();
+    }
+    if (res.error) throw new Error(res.error.message);
+    return res.data;
   });
 
 export const deleteTraining = createServerFn({ method: "POST" })

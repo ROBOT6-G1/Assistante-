@@ -42,13 +42,23 @@ export const upsertProduct = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => upsertSchema.parse(d))
   .handler(async ({ data, context }) => {
-    const { data: row, error } = await context.supabase
-      .from("products")
-      .upsert({ ...data, user_id: context.userId })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return row;
+    let res;
+    if (data.id) {
+      res = await context.supabase
+        .from("products")
+        .update({ ...data, user_id: context.userId })
+        .eq("id", data.id)
+        .select()
+        .single();
+    } else {
+      res = await context.supabase
+        .from("products")
+        .insert({ ...data, user_id: context.userId })
+        .select()
+        .single();
+    }
+    if (res.error) throw new Error(res.error.message);
+    return res.data;
   });
 
 export const deleteProduct = createServerFn({ method: "POST" })
