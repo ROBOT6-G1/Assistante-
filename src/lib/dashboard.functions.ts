@@ -113,6 +113,17 @@ export const toggleGeminiKey = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const resetAllGeminiKeys = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { error } = await context.supabase
+      .from("gemini_keys")
+      .update({ is_active: true, error_count: 0, disabled_until: null })
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
 /* ---------------- Settings ---------------- */
 
 export const getSettings = createServerFn({ method: "GET" })

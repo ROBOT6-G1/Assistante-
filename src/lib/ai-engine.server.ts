@@ -169,7 +169,7 @@ export function splitMessengerText(text: string, maxLength = MESSENGER_TEXT_LIMI
 
 async function pickGeminiKey(userId: string) {
   const nowIso = new Date().toISOString();
-  const { data } = await supabaseAdmin
+  let { data } = await supabaseAdmin
     .from("gemini_keys")
     .select("*")
     .eq("user_id", userId)
@@ -178,6 +178,20 @@ async function pickGeminiKey(userId: string) {
     .order("last_used_at", { ascending: true, nullsFirst: true })
     .limit(1)
     .maybeSingle();
+
+  // If all active keys are currently marked disabled_until, fallback to any active key
+  if (!data) {
+    const { data: fallbackKey } = await supabaseAdmin
+      .from("gemini_keys")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .order("last_used_at", { ascending: true, nullsFirst: true })
+      .limit(1)
+      .maybeSingle();
+    data = fallbackKey;
+  }
+
   return data;
 }
 
@@ -195,6 +209,26 @@ async function markKeyError(id: string, currentErrors: number) {
     .from("gemini_keys")
     .update({ error_count: next, disabled_until: disabled })
     .eq("id", id);
+}
+
+/** Auto-detect available Gemini models dynamically from the Google Gemini API key */
+async function fetchAvailableGeminiModels(apiKey: string): Promise<{ ok: boolean; models: string[]; error?: string }> {
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (!res.ok) {
+      const t = await res.text();
+      return { ok: false, models: [], error: `Clé Gemini inaccessible (${res.status}): ${t.slice(0, 180)}` };
+    }
+    const json: any = await res.json();
+    const list: any[] = json.models ?? [];
+    const models = list
+      .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
+      .map((m) => (typeof m.name === "string" ? m.name.replace(/^models\//, "") : ""))
+      .filter(Boolean);
+    return { ok: true, models };
+  } catch (err: any) {
+    return { ok: false, models: [], error: err.message || String(err) };
+  }
 }
 
 async function callGemini(
@@ -217,8 +251,26 @@ async function callGemini(
     generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
   };
 
-  const modelsToTry = [modelName, "gemini-2.0-flash", "gemini-1.5-flash"];
-  const uniqueModels = [...new Set(modelsToTry.filter(Boolean))];
+  // 1. Auto-discover available models from API key dynamically
+  const discovery = await fetchAvailableGeminiModels(apiKey);
+
+  const standardCandidates = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-pro",
+    "gemini-2.5-flash-lite",
+    "gemini-1.5-flash-8b",
+  ];
+
+  const candidateList = [
+    modelName,
+    ...(discovery.models ?? []),
+    ...standardCandidates,
+  ].filter(Boolean);
+
+  const uniqueModels = [...new Set(candidateList)];
 
   let lastError = "";
   for (const m of uniqueModels) {
@@ -229,7 +281,7 @@ async function callGemini(
       );
       if (!res.ok) {
         const t = await res.text();
-        lastError = `Gemini ${res.status} (${m}): ${t.slice(0, 200)}`;
+        lastError = `Gemini (${m}): ${t.slice(0, 180)}`;
         console.warn(`[gemini] model ${m} failed:`, lastError);
         continue;
       }
@@ -243,11 +295,15 @@ async function callGemini(
       if (finish === "MAX_TOKENS") {
         console.warn("[gemini] réponse tronquée par MAX_TOKENS, longueur:", text.length);
       }
-      if (!text) throw new Error(`Empty Gemini response (finishReason=${finish ?? "unknown"})`);
+      if (!text) throw new Error(`Réponse vide du modèle ${m} (finishReason=${finish ?? "unknown"})`);
       return text;
     } catch (err: any) {
       lastError = err.message || String(err);
     }
+  }
+
+  if (!discovery.ok && discovery.error) {
+    throw new Error(discovery.error);
   }
 
   throw new Error(lastError || "Toutes les tentatives de modèles Gemini ont échoué");
@@ -507,7 +563,7 @@ export async function buildSystemPrompt(
 
   const { data } = await query;
 
-  const rows = (data ?? []).filter((p: any) => {
+  let matchedRows = (data ?? []).filter((p: any) => {
     const ids: string[] =
       Array.isArray(p.page_ids) && p.page_ids.length ? p.page_ids : p.page_id ? [p.page_id] : [];
     const pageOk = ids.length === 0 || (pageId ? ids.includes(pageId) : false);
@@ -516,15 +572,31 @@ export async function buildSystemPrompt(
     return pageOk && typeOk;
   });
 
-  if (rows.length === 0) return null;
+  // Fallback 1: if no prompt matched both page and assistance type, ignore assistance_type filter
+  if (matchedRows.length === 0) {
+    matchedRows = (data ?? []).filter((p: any) => {
+      const ids: string[] =
+        Array.isArray(p.page_ids) && p.page_ids.length ? p.page_ids : p.page_id ? [p.page_id] : [];
+      return ids.length === 0 || (pageId ? ids.includes(pageId) : false);
+    });
+  }
 
-  const extras = rows
+  // Fallback 2: if no prompt matched pageId specifically, use any active prompts of the user
+  if (matchedRows.length === 0) {
+    matchedRows = data ?? [];
+  }
+
+  let extras = matchedRows
     .sort((a: any, b: any) => (a.category === "global" ? -1 : 1))
     .map((p: any) => (p.content ?? "").trim())
     .filter(Boolean)
     .join("\n\n");
 
-  if (!extras) return null;
+  // Fallback 3: if still no prompts configured at all, use default professional assistant prompt
+  if (!extras) {
+    extras =
+      "Vous êtes l'assistant virtuel IA professionnel de notre page Facebook. Répondez de manière chaleureuse, amicale, claire et professionnelle aux questions des clients en les orientant efficacement.";
+  }
 
   const styleRules =
     "Règles de style OBLIGATOIRES :\n" +

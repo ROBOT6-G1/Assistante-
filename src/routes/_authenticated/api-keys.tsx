@@ -20,6 +20,7 @@ import {
   upsertGeminiKey,
   deleteGeminiKey,
   toggleGeminiKey,
+  resetAllGeminiKeys,
 } from "@/lib/dashboard.functions";
 import { Plus, Trash2, KeyRound, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
@@ -62,6 +63,15 @@ function ApiKeysPage() {
     await toggleGeminiKey({ data: { id, is_active } });
     qc.invalidateQueries({ queryKey: ["gemini-keys"] });
   };
+  const resetAll = async () => {
+    try {
+      await resetAllGeminiKeys();
+      toast.success("Toutes les clés ont été réactivées et réinitialisées.");
+      qc.invalidateQueries({ queryKey: ["gemini-keys"] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erreur");
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -69,20 +79,27 @@ function ApiKeysPage() {
         <div>
           <h1 className="text-3xl font-bold gradient-text">Clés API Gemini</h1>
           <p className="text-muted-foreground mt-1">
-            Rotation automatique —{" "}
+            Détection automatique des modèles par clé —{" "}
             <span className="text-foreground font-medium">
               {data.filter((k) => k.is_active).length}/{data.length}
             </span>{" "}
-            actives (max 20).
+            actives.
           </p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button disabled={data.length >= 20}>
-              <Plus className="h-4 w-4 mr-2" />
-              Ajouter une clé
+        <div className="flex items-center gap-2">
+          {data.length > 0 && (
+            <Button variant="outline" onClick={resetAll} title="Réinitialiser le statut de toutes les clés">
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Réinitialiser
             </Button>
-          </DialogTrigger>
+          )}
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button disabled={data.length >= 20}>
+                <Plus className="h-4 w-4 mr-2" />
+                Ajouter une clé
+              </Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Nouvelle clé Gemini</DialogTitle>
@@ -124,6 +141,7 @@ function ApiKeysPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {data.length === 0 ? (
