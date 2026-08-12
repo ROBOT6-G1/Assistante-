@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { auth } from "@/integrations/firebase/config";
-import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { GoogleAuthProvider, signInWithPopup, signInWithCredential } from "firebase/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -67,52 +67,65 @@ function AuthPage() {
         !window.location.hostname.includes(".run.app");
 
       if (isCustomDomain) {
-        const emailInput = prompt(
-          "Entrez votre adresse email Google pour continuer :",
-          "utilisateur@gmail.com",
-        );
-        if (!emailInput) {
-          setLoading(false);
-          return;
-        }
-        const normalizedEmail = emailInput.toLowerCase().trim();
-        const uid = "google_" + btoa(normalizedEmail).replace(/=/g, "");
+        // We will open the Google Sign-In popup pointing to our authorized preview domain
+        const authUrl =
+          "https://ais-pre-i7b5jeeh6qqkeyb3nv4dw4-469517843202.europe-west2.run.app/auth-callback";
 
-        const sessionUser = { uid, email: normalizedEmail };
-        localStorage.setItem(
-          "agence_virtuelle_user_session",
-          JSON.stringify(sessionUser),
+        const width = 500;
+        const height = 650;
+        const left = window.screen.width / 2 - width / 2;
+        const top = window.screen.height / 2 - height / 2;
+        const popup = window.open(
+          authUrl,
+          "GoogleAuth",
+          `width=${width},height=${height},left=${left},top=${top}`,
         );
 
-        try {
-          const { data: existing } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", uid);
-          if (!existing || existing.length === 0) {
-            await supabase.from("profiles").insert({
-              id: uid,
-              uid,
-              email: normalizedEmail,
-              created_at: new Date().toISOString(),
-            });
-          }
-        } catch (e) {
-          console.warn("Failed to save google profile:", e);
+        if (!popup) {
+          throw new Error(
+            "Le bloqueur de fenêtres contextuelles a empêché l'ouverture du popup de connexion.",
+          );
         }
 
-        window.dispatchEvent(new Event("storage"));
+        interface AuthPayload {
+          idToken: string;
+          accessToken: string | null;
+        }
+
+        const authPromise = new Promise<AuthPayload>((resolve, reject) => {
+          const handleMessage = (event: MessageEvent) => {
+            if (event.data?.type === "GOOGLE_AUTH_SUCCESS") {
+              window.removeEventListener("message", handleMessage);
+              resolve(event.data);
+            } else if (event.data?.type === "GOOGLE_AUTH_FAILURE") {
+              window.removeEventListener("message", handleMessage);
+              reject(
+                new Error(
+                  event.data.error || "Échec de l'authentification Google.",
+                ),
+              );
+            }
+          };
+          window.addEventListener("message", handleMessage);
+        });
+
+        const { idToken, accessToken } = await authPromise;
+        const credential = GoogleAuthProvider.credential(idToken, accessToken);
+        await signInWithCredential(auth, credential);
+
         toast.success("Connexion Google réussie !");
         navigate({ to: "/dashboard" });
         return;
       }
 
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
       await signInWithPopup(auth, provider);
       toast.success("Connexion Google réussie !");
       navigate({ to: "/dashboard" });
     } catch (err) {
-      toast.error("Connexion Google échouée");
+      const errMsg = err instanceof Error ? err.message : "Connexion Google échouée";
+      toast.error(errMsg);
       console.error(err);
     } finally {
       setLoading(false);

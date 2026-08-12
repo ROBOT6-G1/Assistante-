@@ -362,24 +362,6 @@ class StorageBuilder {
   }
 }
 
-const isCustomDomain = typeof window !== "undefined" && 
-  !window.location.hostname.includes("localhost") && 
-  !window.location.hostname.includes("127.0.0.1") && 
-  !window.location.hostname.includes(".run.app");
-
-function getAutonomousUser() {
-  if (typeof window === "undefined") return null;
-  const stored = localStorage.getItem("agence_virtuelle_user_session");
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 const mockSupabase = {
   from: (tableName: string) => {
     return new QueryBuilder(tableName);
@@ -393,15 +375,6 @@ const mockSupabase = {
     getUser: async () => {
       if (typeof window === "undefined") {
         return { data: { user: null }, error: null };
-      }
-      if (isCustomDomain) {
-        const u = getAutonomousUser();
-        return {
-          data: {
-            user: u ? { id: u.uid, email: u.email } : null,
-          },
-          error: null,
-        };
       }
       let user = auth.currentUser;
       if (!user) {
@@ -427,20 +400,6 @@ const mockSupabase = {
     getSession: async () => {
       if (typeof window === "undefined") {
         return { data: { session: null }, error: null };
-      }
-      if (isCustomDomain) {
-        const u = getAutonomousUser();
-        return {
-          data: {
-            session: u
-              ? {
-                  access_token: "mock_token_" + u.uid,
-                  user: { id: u.uid, email: u.email },
-                }
-              : null,
-          },
-          error: null,
-        };
       }
       let user = auth.currentUser;
       if (!user) {
@@ -468,42 +427,6 @@ const mockSupabase = {
       };
     },
     onAuthStateChange: (callback: (event: string, session: any) => void) => {
-      if (isCustomDomain) {
-        const u = getAutonomousUser();
-        const session = u
-          ? {
-              access_token: "mock_token_" + u.uid,
-              user: { id: u.uid, email: u.email },
-            }
-          : null;
-        
-        setTimeout(() => {
-          callback(u ? "SIGNED_IN" : "SIGNED_OUT", session);
-        }, 10);
-
-        const handleStorage = (e: StorageEvent) => {
-          if (e.key === "agence_virtuelle_user_session") {
-            const updatedUser = getAutonomousUser();
-            const updatedSession = updatedUser
-              ? {
-                  access_token: "mock_token_" + updatedUser.uid,
-                  user: { id: updatedUser.uid, email: updatedUser.email },
-                }
-              : null;
-            callback(updatedUser ? "SIGNED_IN" : "SIGNED_OUT", updatedSession);
-          }
-        };
-        window.addEventListener("storage", handleStorage);
-
-        return {
-          data: {
-            subscription: {
-              unsubscribe: () => window.removeEventListener("storage", handleStorage),
-            },
-          },
-        };
-      }
-
       const unsub = onAuthStateChanged(auth, async (user) => {
         const token = user ? await user.getIdToken() : null;
         const session = user
@@ -526,36 +449,6 @@ const mockSupabase = {
       };
     },
     signUp: async ({ email, password }: any) => {
-      const normalizedEmail = email.toLowerCase().trim();
-      if (isCustomDomain) {
-        try {
-          const q = query(collection(db, "profiles"), where("email", "==", normalizedEmail));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            throw new Error("Cet email est déjà utilisé.");
-          }
-
-          const uid = "custom_" + crypto.randomUUID().replace(/-/g, "");
-          const newUser = {
-            id: uid,
-            uid,
-            email: normalizedEmail,
-            password,
-            created_at: new Date().toISOString(),
-          };
-
-          await setDoc(doc(db, "profiles", uid), newUser);
-
-          const sessionUser = { uid, email: normalizedEmail };
-          localStorage.setItem("agence_virtuelle_user_session", JSON.stringify(sessionUser));
-          window.dispatchEvent(new Event("storage"));
-
-          return { data: { user: sessionUser }, error: null };
-        } catch (err: any) {
-          return { data: null, error: err };
-        }
-      }
-
       try {
         const res = await createUserWithEmailAndPassword(auth, email, password);
         return { data: { user: { id: res.user.uid, email: res.user.email } }, error: null };
@@ -564,30 +457,6 @@ const mockSupabase = {
       }
     },
     signInWithPassword: async ({ email, password }: any) => {
-      const normalizedEmail = email.toLowerCase().trim();
-      if (isCustomDomain) {
-        try {
-          const q = query(collection(db, "profiles"), where("email", "==", normalizedEmail));
-          const snap = await getDocs(q);
-          if (snap.empty) {
-            throw new Error("Aucun utilisateur trouvé avec cet email.");
-          }
-
-          const userDoc = snap.docs[0].data();
-          if (userDoc.password !== password) {
-            throw new Error("Mot de passe incorrect.");
-          }
-
-          const sessionUser = { uid: userDoc.uid, email: normalizedEmail };
-          localStorage.setItem("agence_virtuelle_user_session", JSON.stringify(sessionUser));
-          window.dispatchEvent(new Event("storage"));
-
-          return { data: { user: sessionUser }, error: null };
-        } catch (err: any) {
-          return { data: null, error: err };
-        }
-      }
-
       try {
         const res = await signInWithEmailAndPassword(auth, email, password);
         return { data: { user: { id: res.user.uid, email: res.user.email } }, error: null };
@@ -596,12 +465,6 @@ const mockSupabase = {
       }
     },
     signOut: async () => {
-      if (isCustomDomain) {
-        localStorage.removeItem("agence_virtuelle_user_session");
-        window.dispatchEvent(new Event("storage"));
-        return { error: null };
-      }
-
       try {
         await signOut(auth);
         return { error: null };
