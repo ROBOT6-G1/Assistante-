@@ -3,7 +3,7 @@
 // - Image enhancement using Lovable AI Gemini image model (Nano Banana)
 // - Facebook page publishing (photo + caption or plain text)
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
-import { generateAiReply, sanitizeReply } from "@/lib/ai-engine.server";
+import { generateAiReply, sanitizeReply, sanitizeAiResponse } from "@/lib/ai-engine.server";
 
 const IMAGE_ENHANCE_MODEL = "google/gemini-2.5-flash-image";
 
@@ -108,6 +108,7 @@ export async function generatePostDescription(opts: {
       "Ampiasao emoji mifanaraka fa aza be loatra. Ampio call-to-action mazava amin'ny farany (ohatra: Commentez, Likez, Envoyez un message). " +
       "Aza mampiasa markdown *, #, ** — soraty mivantana ny lahatsoratra. " +
       "Aza mametraka lien externe. " +
+      "ZAVATRA TSY MAINTSY TANDREMINA: TSY MAMETRAKA MIHITSY resaka fandinihana (thinking), drafitra, na teny Anglisy fanazavana. Manomboka mivantana amin'ny lahatsoratra tokony havoaka izy io, amin'ny fiteny nampiasain'ny mpanjifa ihany. " +
       "Halavany: 4 ka hatramin'ny 8 andalana, misy fiatoana mahafinaritra.";
 
   const hint = opts.userHint?.trim();
@@ -128,7 +129,8 @@ export async function generatePostDescription(opts: {
     allowLinks: false,
     minChars: 350,
   });
-  return { text: sanitizeReply(result.text, false), provider: result.provider };
+  const cleaned = sanitizeAiResponse(result.text);
+  return { text: sanitizeReply(cleaned, false), provider: result.provider };
 }
 
 /** Publish a post to a Facebook page. Supports 0, 1 or many images (multi-photo album post). */

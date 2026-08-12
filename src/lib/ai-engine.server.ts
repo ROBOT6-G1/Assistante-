@@ -282,7 +282,7 @@ function normalizeContentsForGemini(history: ChatTurn[], parts: AiPart[]) {
   return merged;
 }
 
-function sanitizeAiResponse(text: string): string {
+export function sanitizeAiResponse(text: string): string {
   if (!text) return "";
   let cleaned = text;
 

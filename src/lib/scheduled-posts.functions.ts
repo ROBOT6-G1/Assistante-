@@ -157,6 +157,22 @@ export const uploadPostImage = createServerFn({ method: "POST" })
     return { path, signed_url: signed.signedUrl };
   });
 
+/* ---------------- Image upload (signed URL direct upload) ---------------- */
+
+export const createImageUploadUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ filename: z.string().min(1).max(200) }).parse(d))
+  .handler(async ({ data, context }) => {
+    await ensureBucket(context.supabase, "post-images");
+    const safeName = data.filename.replace(/[^\w.\-]/g, "_");
+    const path = `${context.userId}/${crypto.randomUUID()}-${safeName}`;
+    const { data: signed, error } = await context.supabase.storage
+      .from("post-images")
+      .createSignedUploadUrl(path);
+    if (error) throw new Error(error.message);
+    return { path, token: signed.token, signed_url: signed.signedUrl };
+  });
+
 export const getPostImageUrl = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ path: z.string() }).parse(d))

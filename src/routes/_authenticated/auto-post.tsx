@@ -20,7 +20,7 @@ import {
   listScheduledPosts,
   upsertScheduledPost,
   deleteScheduledPost,
-  uploadPostImage,
+  createImageUploadUrl,
   getPostImageUrl,
   createVideoUploadUrl,
   getPostVideoUrl,
@@ -148,15 +148,20 @@ function AutoPostPage() {
     setUploading(true);
     try {
       for (const file of files) {
-        if (file.size > 8 * 1024 * 1024) {
-          toast.error(`${file.name} : sary lehibe loatra (max 8 Mo)`);
+        if (file.size > 15 * 1024 * 1024) {
+          toast.error(`${file.name} : sary lehibe loatra (max 15 Mo)`);
           continue;
         }
-        const payload = await fileToBase64(file);
-        const res = await uploadPostImage({ data: payload });
+        const { path, token, signed_url } = await createImageUploadUrl({
+          data: { filename: file.name },
+        });
+        const { error: upErr } = await supabase.storage
+          .from("post-images")
+          .uploadToSignedUrl(path, token, file);
+        if (upErr) throw new Error(upErr.message);
         setForm((f) => ({
           ...f,
-          images: [...f.images, { path: res.path, preview: res.signed_url }],
+          images: [...f.images, { path, preview: signed_url }],
         }));
       }
       toast.success("Sary voatahiry");
