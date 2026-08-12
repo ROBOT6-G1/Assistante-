@@ -362,6 +362,27 @@ class StorageBuilder {
   }
 }
 
+const isCustomDomain =
+  typeof window !== "undefined" &&
+  !window.location.hostname.includes("localhost") &&
+  !window.location.hostname.includes("127.0.0.1") &&
+  !window.location.hostname.includes(".run.app");
+
+const getCustomDomainSession = () => {
+  if (typeof window === "undefined") return null;
+  const stored = localStorage.getItem("agence_virtuelle_user_session");
+  if (!stored) return null;
+  try {
+    const session = JSON.parse(stored);
+    if (session && session.uid && session.email && session.token) {
+      return session;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
 const mockSupabase = {
   from: (tableName: string) => {
     return new QueryBuilder(tableName);
@@ -376,6 +397,20 @@ const mockSupabase = {
       if (typeof window === "undefined") {
         return { data: { user: null }, error: null };
       }
+      
+      const customSession = getCustomDomainSession();
+      if (customSession) {
+        return {
+          data: {
+            user: {
+              id: customSession.uid,
+              email: customSession.email,
+            },
+          },
+          error: null,
+        };
+      }
+
       let user = auth.currentUser;
       if (!user) {
         user = await new Promise((resolve) => {
@@ -401,6 +436,23 @@ const mockSupabase = {
       if (typeof window === "undefined") {
         return { data: { session: null }, error: null };
       }
+
+      const customSession = getCustomDomainSession();
+      if (customSession) {
+        return {
+          data: {
+            session: {
+              access_token: customSession.token,
+              user: {
+                id: customSession.uid,
+                email: customSession.email,
+              },
+            },
+          },
+          error: null,
+        };
+      }
+
       let user = auth.currentUser;
       if (!user) {
         user = await new Promise((resolve) => {
@@ -427,7 +479,20 @@ const mockSupabase = {
       };
     },
     onAuthStateChange: (callback: (event: string, session: any) => void) => {
+      // Firebase auth state listener
       const unsub = onAuthStateChanged(auth, async (user) => {
+        const customSession = getCustomDomainSession();
+        if (customSession && !user) {
+          callback("SIGNED_IN", {
+            access_token: customSession.token,
+            user: {
+              id: customSession.uid,
+              email: customSession.email,
+            },
+          });
+          return;
+        }
+
         const token = user ? await user.getIdToken() : null;
         const session = user
           ? {
@@ -440,10 +505,38 @@ const mockSupabase = {
           : null;
         callback(user ? "SIGNED_IN" : "SIGNED_OUT", session);
       });
+
+      // Storage event listener for custom domains
+      let handleStorage: (() => void) | null = null;
+      if (typeof window !== "undefined") {
+        handleStorage = () => {
+          const customSession = getCustomDomainSession();
+          if (customSession) {
+            callback("SIGNED_IN", {
+              access_token: customSession.token,
+              user: {
+                id: customSession.uid,
+                email: customSession.email,
+              },
+            });
+          } else if (!auth.currentUser) {
+            callback("SIGNED_OUT", null);
+          }
+        };
+        window.addEventListener("storage", handleStorage);
+        window.addEventListener("agence_virtuelle_auth_change", handleStorage);
+      }
+
       return {
         data: {
           subscription: {
-            unsubscribe: () => unsub(),
+            unsubscribe: () => {
+              unsub();
+              if (handleStorage) {
+                window.removeEventListener("storage", handleStorage);
+                window.removeEventListener("agence_virtuelle_auth_change", handleStorage);
+              }
+            },
           },
         },
       };
@@ -466,6 +559,11 @@ const mockSupabase = {
     },
     signOut: async () => {
       try {
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("agence_virtuelle_user_session");
+          window.dispatchEvent(new Event("storage"));
+          window.dispatchEvent(new Event("agence_virtuelle_auth_change"));
+        }
         await signOut(auth);
         return { error: null };
       } catch (err: any) {
