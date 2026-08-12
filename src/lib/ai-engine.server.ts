@@ -216,26 +216,41 @@ async function callGemini(
     contents,
     generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
   };
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
-    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
-  );
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Gemini ${res.status}: ${t.slice(0, 200)}`);
+
+  const modelsToTry = [modelName, "gemini-2.0-flash", "gemini-1.5-flash"];
+  const uniqueModels = [...new Set(modelsToTry.filter(Boolean))];
+
+  let lastError = "";
+  for (const m of uniqueModels) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      );
+      if (!res.ok) {
+        const t = await res.text();
+        lastError = `Gemini ${res.status} (${m}): ${t.slice(0, 200)}`;
+        console.warn(`[gemini] model ${m} failed:`, lastError);
+        continue;
+      }
+      const json: any = await res.json();
+      const candidate = json?.candidates?.[0];
+      const finish = candidate?.finishReason;
+      const text = candidate?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
+      if (finish && finish !== "STOP" && finish !== "MAX_TOKENS") {
+        console.warn("[gemini] finishReason non-STOP:", finish);
+      }
+      if (finish === "MAX_TOKENS") {
+        console.warn("[gemini] réponse tronquée par MAX_TOKENS, longueur:", text.length);
+      }
+      if (!text) throw new Error(`Empty Gemini response (finishReason=${finish ?? "unknown"})`);
+      return text;
+    } catch (err: any) {
+      lastError = err.message || String(err);
+    }
   }
-  const json: any = await res.json();
-  const candidate = json?.candidates?.[0];
-  const finish = candidate?.finishReason;
-  const text = candidate?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
-  if (finish && finish !== "STOP" && finish !== "MAX_TOKENS") {
-    console.warn("[gemini] finishReason non-STOP:", finish);
-  }
-  if (finish === "MAX_TOKENS") {
-    console.warn("[gemini] réponse tronquée par MAX_TOKENS, longueur:", text.length);
-  }
-  if (!text) throw new Error(`Empty Gemini response (finishReason=${finish ?? "unknown"})`);
-  return text;
+
+  throw new Error(lastError || "Toutes les tentatives de modèles Gemini ont échoué");
 }
 
 async function callLovableAi(
@@ -315,6 +330,17 @@ export async function generateAiReply(opts: {
     }
   }
 
+  const { data: allKeys } = await supabaseAdmin
+    .from("gemini_keys")
+    .select("id,is_active,disabled_until")
+    .eq("user_id", userId);
+
+  if (!allKeys || allKeys.length === 0) {
+    throw new Error(
+      "Aucune clé API Gemini configurée. Veuillez ajouter votre clé API Gemini dans le menu 'Clés Gemini'.",
+    );
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const key = await pickGeminiKey(userId);
     if (!key) break;
@@ -342,7 +368,9 @@ export async function generateAiReply(opts: {
     }
   }
 
-  throw new Error("Aucun fournisseur IA disponible (Lovable AI + Gemini échoués)");
+  throw new Error(
+    "Clés API Gemini invalides ou temporairement désactivées. Vérifiez vos clés dans le menu 'Clés Gemini'.",
+  );
 }
 
 /** Fetch dynamic catalog context (formations / produits / paiements) selon assistance_type. */
@@ -483,7 +511,8 @@ export async function buildSystemPrompt(
     const ids: string[] =
       Array.isArray(p.page_ids) && p.page_ids.length ? p.page_ids : p.page_id ? [p.page_id] : [];
     const pageOk = ids.length === 0 || (pageId ? ids.includes(pageId) : false);
-    const typeOk = !p.assistance_type || p.assistance_type === assistanceType;
+    const typeOk =
+      !p.assistance_type || p.assistance_type === "all" || p.assistance_type === assistanceType;
     return pageOk && typeOk;
   });
 
@@ -1450,4 +1479,90 @@ export async function replyAllPendingForAllUsers(): Promise<{
     }
   }
   return { users: userIds.length, processed, replied, errors };
+}
+
+/** Scan recent published posts for a user's connected pages and auto-reply to unhandled comments. */
+export async function scanAndReplyCommentsForUser(userId: string): Promise<{
+  scanned: number;
+  replied: number;
+  errors: number;
+  details: string[];
+}> {
+  const details: string[] = [];
+  let scanned = 0;
+  let replied = 0;
+  let errors = 0;
+
+  const { data: pages } = await supabaseAdmin
+    .from("facebook_pages")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("is_connected", true);
+
+  if (!pages || pages.length === 0) {
+    return { scanned, replied, errors, details: ["Aucune page Facebook connectée."] };
+  }
+
+  for (const page of pages) {
+    try {
+      const postsUrl =
+        `https://graph.facebook.com/v21.0/${page.page_id}/published_posts` +
+        `?fields=id,message,created_time,comments.limit(25){id,from,message,created_time}` +
+        `&limit=10&access_token=${page.page_access_token}`;
+      const res = await fetch(postsUrl);
+      if (!res.ok) {
+        const t = await res.text();
+        errors++;
+        const pageName = page.page_name ?? page.page_id;
+        details.push(`✗ ${pageName} : Erreur Graph API (${res.status}) ${t.slice(0, 100)}`);
+        continue;
+      }
+      const json: any = await res.json();
+      const posts: any[] = json.data ?? [];
+
+      for (const post of posts) {
+        const comments: any[] = post.comments?.data ?? [];
+        for (const c of comments) {
+          scanned++;
+          const commentId = c.id;
+          const authorId = c.from?.id;
+          if (!commentId || !authorId || authorId === page.page_id) continue;
+
+          const { data: existing } = await supabaseAdmin
+            .from("comments_log")
+            .select("id,replied")
+            .eq("comment_id", commentId)
+            .maybeSingle();
+
+          if (existing?.replied) continue;
+
+          await handleFeedChange(page, {
+            item: "comment",
+            verb: "add",
+            comment_id: commentId,
+            post_id: post.id,
+            from: c.from,
+            message: c.message ?? "",
+          });
+
+          const { data: updated } = await supabaseAdmin
+            .from("comments_log")
+            .select("replied")
+            .eq("comment_id", commentId)
+            .maybeSingle();
+
+          if (updated?.replied) {
+            replied++;
+            details.push(`✓ Commentaire de ${c.from?.name ?? authorId} répondu.`);
+          }
+        }
+      }
+    } catch (e) {
+      errors++;
+      const msg = e instanceof Error ? e.message : String(e);
+      details.push(`✗ ${page.page_name ?? page.page_id} : ${msg.slice(0, 120)}`);
+    }
+  }
+
+  return { scanned, replied, errors, details };
 }

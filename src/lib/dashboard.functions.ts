@@ -25,7 +25,7 @@ const upsertPromptSchema = z.object({
   is_active: z.boolean(),
   page_id: z.string().nullable().optional(),
   page_ids: z.array(z.string()).optional(),
-  assistance_type: z.enum(["online_work", "training", "sales"]).nullable().optional(),
+  assistance_type: z.enum(["online_work", "training", "sales", "all"]).nullable().optional(),
 });
 
 export const upsertPrompt = createServerFn({ method: "POST" })

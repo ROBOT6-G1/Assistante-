@@ -81,10 +81,18 @@ function SettingsPage() {
     setReplying(true);
     try {
       const res = await replyAllPendingMessages();
-      toast.success(
-        `${res.replied} réponse(s) envoyée(s) sur ${res.processed} conversation(s) en attente` +
-          (res.errors ? ` — ${res.errors} erreur(s)` : ""),
-      );
+      const detailStr = res.details?.length ? `\n${res.details.join("\n")}` : "";
+      if (res.errors > 0 && res.replied === 0) {
+        toast.error(
+          `${res.replied} réponse(s) envoyée(s) sur ${res.processed} conversation(s) — ${res.errors} erreur(s)${detailStr}`,
+        );
+      } else {
+        toast.success(
+          `${res.replied} réponse(s) envoyée(s) sur ${res.processed} conversation(s) en attente${
+            res.errors ? ` (${res.errors} erreur(s))` : ""
+          }${detailStr}`,
+        );
+      }
       qc.invalidateQueries({ queryKey: ["messages-log"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Erreur");

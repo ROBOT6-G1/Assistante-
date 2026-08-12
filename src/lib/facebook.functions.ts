@@ -90,12 +90,17 @@ export const getWebhookConfig = createServerFn({ method: "GET" })
 export const triggerCommentScan = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({}).parse(d ?? {}))
-  .handler(async () => {
-    // Phase 5 will implement the scan; stub for now
+  .handler(async ({ context }) => {
+    const { scanAndReplyCommentsForUser } = await import("@/lib/ai-engine.server");
+    const res = await scanAndReplyCommentsForUser(context.userId);
     return {
       ok: true,
-      scanned: 0,
-      replied: 0,
-      note: "Le moteur de scan sera activé après connexion d'une page Facebook.",
+      scanned: res.scanned,
+      replied: res.replied,
+      errors: res.errors,
+      details: res.details,
+      note: res.details.length
+        ? res.details.join("\n")
+        : `${res.replied} commentaire(s) répondu(s) sur ${res.scanned} scanné(s).`,
     };
   });

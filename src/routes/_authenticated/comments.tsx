@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions } from "@tanstack/react-query";
+import { useSuspenseQuery, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,11 +23,17 @@ function CommentsPage() {
   const { data } = useSuspenseQuery(commentsQuery);
   const [loading, setLoading] = useState(false);
 
+  const qc = useQueryClient();
   const scan = async () => {
     setLoading(true);
     try {
       const res = await triggerCommentScan({ data: {} });
-      toast.success(res.note ?? `${res.replied} réponse(s) envoyée(s)`);
+      if (res.errors && res.errors > 0 && res.replied === 0) {
+        toast.error(res.note ?? `${res.replied} réponse(s) envoyée(s) — ${res.errors} erreur(s)`);
+      } else {
+        toast.success(res.note ?? `${res.replied} réponse(s) envoyée(s)`);
+      }
+      qc.invalidateQueries({ queryKey: ["comments-log"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Erreur");
     } finally {
