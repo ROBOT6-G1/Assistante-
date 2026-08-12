@@ -285,17 +285,72 @@ function normalizeContentsForGemini(history: ChatTurn[], parts: AiPart[]) {
 function sanitizeAiResponse(text: string): string {
   if (!text) return "";
   let cleaned = text;
+
+  // Remove <think>...</think> or ```thinking...```
   cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "");
   cleaned = cleaned.replace(/```thinking[\s\S]*?```/gi, "");
-  const lines = cleaned.split("\n");
-  const filteredLines = lines.filter((line) => {
-    const l = line.trim().toLowerCase();
-    if (l.startsWith("thinking:") || l.startsWith("thought:") || l.startsWith("analyse:") || l.startsWith("let me analyze")) {
+
+  // Remove paragraphs or lines containing internal reasoning, planning, or rules check
+  const paragraphs = cleaned.split(/\n\s*\n/);
+  const cleanParagraphs = paragraphs.filter((p) => {
+    const lower = p.trim().toLowerCase();
+    if (
+      lower.includes("the user's question") ||
+      lower.includes("let's verify") ||
+      lower.includes("catalog rule") ||
+      lower.includes("final check") ||
+      lower.includes("one detail") ||
+      lower.includes("final response structure") ||
+      lower.includes("can be interpreted as") ||
+      lower.includes("since i am a teacher") ||
+      lower.includes("i must provide the list") ||
+      lower.includes("total length is sufficient") ||
+      lower.includes("i will ensure") ||
+      lower.startsWith("ready.") ||
+      lower.startsWith("thinking:") ||
+      lower.startsWith("thought:") ||
+      lower.startsWith("analyse:") ||
+      lower.startsWith("let me analyze")
+    ) {
       return false;
     }
     return true;
   });
-  return filteredLines.join("\n").trim();
+
+  cleaned = cleanParagraphs.join("\n\n").trim();
+
+  // Strip any leading boilerplate up to Ready. or similar markers
+  cleaned = cleaned.replace(/^.*?\bReady\.\s*/is, "");
+
+  // If there is English meta-text at the start, skip to the actual response starting with greeting/malgache/french
+  const lines = cleaned.split("\n");
+  const actualLines: string[] = [];
+  let foundStart = false;
+  for (const line of lines) {
+    const l = line.trim();
+    if (!foundStart) {
+      if (/^(misaotra|manao|salama|bonjour|bjr|cc|coucou|hello|hi|amin'ny|raha|ny|eto|rehefa|izahay|momba)\b/i.test(l)) {
+        foundStart = true;
+        actualLines.push(line);
+      } else if (l.length > 25 && !l.includes(":") && !l.toLowerCase().includes("user") && !l.toLowerCase().includes("rule")) {
+        foundStart = true;
+        actualLines.push(line);
+      }
+    } else {
+      actualLines.push(line);
+    }
+  }
+
+  if (actualLines.length > 0) {
+    cleaned = actualLines.join("\n").trim();
+  }
+
+  // Max 2000 characters limit as requested
+  if (cleaned.length > 2000) {
+    cleaned = cleaned.slice(0, 2000).trim();
+  }
+
+  return cleaned;
 }
 
 async function callGemini(
@@ -312,7 +367,7 @@ async function callGemini(
   const body = {
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents,
-    generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
+    generationConfig: { temperature: 0.5, maxOutputTokens: 2000 },
   };
 
   // 1. Auto-discover available models from API key dynamically
@@ -396,13 +451,13 @@ async function callLovableAi(
   const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json", "Lovable-API-Key": key },
-    body: JSON.stringify({ model: LOVABLE_MODEL, messages, temperature: 0.6, max_tokens: 8192 }),
+    body: JSON.stringify({ model: LOVABLE_MODEL, messages, temperature: 0.5, max_tokens: 2000 }),
   });
   if (!res.ok) throw new Error(`Lovable AI ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json: any = await res.json();
   const text = json?.choices?.[0]?.message?.content ?? "";
   if (!text) throw new Error("Empty Lovable AI response");
-  return text;
+  return sanitizeAiResponse(text);
 }
 
 /** Generate a reply. Lovable AI first (default), Gemini rotation as fallback. */
