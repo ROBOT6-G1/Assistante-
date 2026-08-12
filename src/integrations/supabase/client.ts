@@ -56,6 +56,8 @@ class QueryBuilder {
   private orderAscending: boolean = true;
   private limitCount?: number;
   private relations: string[] = [];
+  private pendingUpdateData?: any;
+  private pendingDelete: boolean = false;
 
   constructor(colName: string) {
     this.colName = colName;
@@ -184,6 +186,27 @@ class QueryBuilder {
       const snapshot = await getDocs(q);
       const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
+      if (this.pendingUpdateData !== undefined) {
+        const updated = [];
+        const updated_at = new Date().toISOString();
+        for (const item of data) {
+          const updateData = { ...this.pendingUpdateData, updated_at };
+          const docRef = doc(db, this.colName, item.id);
+          await updateDoc(docRef, updateData);
+          updated.push({ ...item, ...updateData });
+        }
+        const result = { data: updated, error: null };
+        return onfulfilled ? onfulfilled(result) : result;
+      }
+
+      if (this.pendingDelete) {
+        for (const item of data) {
+          await deleteDoc(doc(db, this.colName, item.id));
+        }
+        const result = { data, error: null };
+        return onfulfilled ? onfulfilled(result) : result;
+      }
+
       await this.fetchJoinedRelations(data);
 
       const result = { data, error: null };
@@ -230,24 +253,14 @@ class QueryBuilder {
     }
   }
 
-  async update(data: any) {
-    try {
-      const res = await this.then();
-      if (res.error) throw res.error;
-      const items = res.data || [];
-      const updated = [];
-      const updated_at = new Date().toISOString();
+  update(data: any) {
+    this.pendingUpdateData = data;
+    return this;
+  }
 
-      for (const item of items) {
-        const updateData = { ...data, updated_at };
-        const docRef = doc(db, this.colName, item.id);
-        await updateDoc(docRef, updateData);
-        updated.push({ ...item, ...updateData });
-      }
-      return { data: updated, error: null };
-    } catch (err: any) {
-      return { data: null, error: err };
-    }
+  delete() {
+    this.pendingDelete = true;
+    return this;
   }
 
   async upsert(data: any, options?: { onConflict?: string }) {
@@ -314,21 +327,6 @@ class QueryBuilder {
       return { data: upserted, error: null };
     } catch (err: any) {
       console.error("Firestore upsert error:", err);
-      return { data: null, error: err };
-    }
-  }
-
-  async delete() {
-    try {
-      const res = await this.then();
-      if (res.error) throw res.error;
-      const items = res.data || [];
-
-      for (const item of items) {
-        await deleteDoc(doc(db, this.colName, item.id));
-      }
-      return { data: items, error: null };
-    } catch (err: any) {
       return { data: null, error: err };
     }
   }
